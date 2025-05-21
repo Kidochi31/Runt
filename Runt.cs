@@ -52,7 +52,7 @@ namespace Runt
                     // push the data to the receive buffer
                     uint outboundAck = connection.ReceiveBuffer.PushPacket(pack);
                     // tell the sender that data has been received
-                    Sender.ReportReceivedPacket(pack, connection, outboundAck);
+                    connection.SendingData.ReportReceivedPacket(pack, outboundAck);
                 }
             }
             else

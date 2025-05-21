@@ -10,11 +10,12 @@ using System.Threading.Tasks;
 
 namespace Runt
 {
-    internal class SendingData
+    internal class SendingData : ITickConsumer
     {
         readonly IPEndPoint Destination;
         readonly Runt Runt;
         readonly Sender Sender;
+        readonly Ticker Ticker;
         readonly List<(byte[] data, int length, DateTime sendTime, int expiryCount, DateTime expiryTime)> DataToSend = new();
 
         public uint UnackedSeq = 1;
@@ -33,14 +34,15 @@ namespace Runt
         const int MaxExpiry = 10;
         float CongestionWindow = 10;
 
-        public SendingData(Runt runt, IPEndPoint destination, Sender sender)
+        public SendingData(Runt runt, IPEndPoint destination, Sender sender, Ticker ticker)
         {
             Runt = runt;
             Destination = destination;
             Sender = sender;
+            Ticker = ticker;
         }
 
-        public void Tick()
+        public DateTime Tick()
         {
             // this is called after default tick seconds or when an expiry time has been reached
             if (ExpiryIndex == null)
@@ -71,7 +73,8 @@ namespace Runt
                     }
                 }
             }
-            UpdateNextTickTime();
+            UpdateNextTickTime(report:false);
+            return NextTickTime;
         }
 
         public void SendReliable(ReadOnlySpan<byte> data)
@@ -86,7 +89,7 @@ namespace Runt
             }
 
             SendNewDataUpToWindow();
-            UpdateNextTickTime();
+            UpdateNextTickTime(report:true);
         }
 
         public void SendUnreliable(ReadOnlySpan<byte> data)
@@ -95,7 +98,20 @@ namespace Runt
             data.CopyTo(storage);
             Sender.SendPacket(new Packet(storage, data.Length), Destination);
             LastPacketSent = DateTime.Now;
-            UpdateNextTickTime();
+            UpdateNextTickTime(report:false);
+        }
+
+        public void ReportReceivedPacket(Packet packet, uint outboundAck)
+        {
+            uint seq = packet.Seq;
+            uint ack = packet.Ack;
+            if (seq == 0) return; // unreliable, contains no ack info
+
+            if (ack == 0) return; // connection closed
+
+
+            OutboundAck = outboundAck;
+            AckUpTo(ack);
         }
 
         public void AckUpTo(uint seq)
@@ -118,13 +134,9 @@ namespace Runt
                 UnackedSeq += numberAcked;
             }
             SendNewDataUpToWindow();
-            UpdateNextTickTime();
+            UpdateNextTickTime(report:true);
         }
-
-        public void ReportOutboundAck(uint ack)
-        {
-            OutboundAck = ack;
-        }
+        
 
         private uint GetNumberAckedBy(uint ack) => unchecked(ack - UnackedSeq);
 
@@ -134,14 +146,14 @@ namespace Runt
 
         private DateTime GetExpiryTime() => DateTime.Now + RoundTripTime * 1.5;
 
-        private void UpdateNextTickTime()
+        private void UpdateNextTickTime(bool report)
         {
             DateTime OldNextTickTime = NextTickTime;
             
             (ExpiryIndex, NextTickTime) = GetMinimumTickTime();
 
-            if (OldNextTickTime != NextTickTime)
-                Sender.ReportUpdatedNextTickTime();
+            if (OldNextTickTime != NextTickTime && report)
+                Ticker.ReportUpdatedNextTickTime(this, NextTickTime);
         }
 
         private (int? index, DateTime tick) GetMinimumTickTime()
